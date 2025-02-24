@@ -12,14 +12,15 @@ interface IERC20 {
 
     function balanceOf(address account) external view returns (uint256);
 
-    function transfer(address recipient, uint256 amount)
-        external
-        returns (bool);
+    function transfer(
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
 
-    function allowance(address owner, address spender)
-        external
-        view
-        returns (uint256);
+    function allowance(
+        address owner,
+        address spender
+    ) external view returns (uint256);
 
     function approve(address spender, uint256 amount) external returns (bool);
 
@@ -111,20 +112,22 @@ contract Ownable is Context {
 }
 
 interface IUniswapV2Factory {
-    function createPair(address tokenA, address tokenB)
-        external
-        returns (address pair);
+    function createPair(
+        address tokenA,
+        address tokenB
+    ) external returns (address pair);
 
-    function getPair(address tokenA, address tokenB)
-        external
-        returns (address pair);
+    function getPair(
+        address tokenA,
+        address tokenB
+    ) external returns (address pair);
 }
 
 interface IUniswapV2Router01 {
-    function getAmountsOut(uint256 amountIn, address[] calldata path)
-        external
-        view
-        returns (uint256[] memory amounts);
+    function getAmountsOut(
+        uint256 amountIn,
+        address[] calldata path
+    ) external view returns (uint256[] memory amounts);
 }
 
 interface IUniswapV2Router02 is IUniswapV2Router01 {
@@ -140,10 +143,9 @@ interface IUniswapV2Router02 is IUniswapV2Router01 {
 
     function WETH() external pure returns (address);
 
-    function getAmountOut(uint256 amountIn)
-        external
-        pure
-        returns (uint256 amountOut);
+    function getAmountOut(
+        uint256 amountIn
+    ) external pure returns (uint256 amountOut);
 }
 
 contract Token is Context, IERC20, Ownable {
@@ -154,6 +156,8 @@ contract Token is Context, IERC20, Ownable {
     mapping(address => bool) private bots;
     mapping(address => uint256) private _holderLastTransferTimestamp;
     bool public transferDelayEnabled = true;
+    bool public paused = false;
+
     address public _taxWallet;
     address public _devWallet;
     address public _marketingWallet;
@@ -171,13 +175,14 @@ contract Token is Context, IERC20, Ownable {
     uint256 private _buyCount = 0;
 
     uint8 private constant _decimals = 18;
-    uint256 private _tTotal = 50000000000 * 10**_decimals;
+    uint256 private _tTotal = 50000000000 * 10 ** _decimals;
     string private constant _name = unicode"Cypherpup";
     string private constant _symbol = unicode"CPHP";
     uint256 public _maxTxAmount = _tTotal.mul(2).div(100);
     uint256 public _maxWalletSize = _tTotal.mul(2).div(100);
     uint256 public _taxSwapThreshold = _tTotal.mul(2).div(100);
     uint256 public _maxTaxSwap = _tTotal.mul(2).div(100);
+    uint256 public _maxTax = 10; // Maximum allowable tax
     uint256 public slippage = 1;
 
     IUniswapV2Router02 public uniswapV2Router;
@@ -194,6 +199,11 @@ contract Token is Context, IERC20, Ownable {
         inSwap = true;
         _;
         inSwap = false;
+    }
+
+    modifier notPaused() {
+        require(!paused, "Token: Trading is paused");
+        _;
     }
 
     constructor(
@@ -240,29 +250,25 @@ contract Token is Context, IERC20, Ownable {
         return _balances[account];
     }
 
-    function transfer(address recipient, uint256 amount)
-        public
-        override
-        returns (bool)
-    {
+    function transfer(
+        address recipient,
+        uint256 amount
+    ) public override returns (bool) {
         _transfer(_msgSender(), recipient, amount);
         return true;
     }
 
-    function allowance(address owner, address spender)
-        public
-        view
-        override
-        returns (uint256)
-    {
+    function allowance(
+        address owner,
+        address spender
+    ) public view override returns (uint256) {
         return _allowances[owner][spender];
     }
 
-    function approve(address spender, uint256 amount)
-        public
-        override
-        returns (bool)
-    {
+    function approve(
+        address spender,
+        uint256 amount
+    ) public override returns (bool) {
         _approve(_msgSender(), spender, amount);
         return true;
     }
@@ -284,34 +290,45 @@ contract Token is Context, IERC20, Ownable {
         return true;
     }
 
-    function _approve(
-        address owner,
-        address spender,
-        uint256 amount
-    ) private {
+    function _approve(address owner, address spender, uint256 amount) private {
         require(owner != address(0), "ERC20: approve from the zero address");
         require(spender != address(0), "ERC20: approve to the zero address");
         _allowances[owner][spender] = amount;
         emit Approval(owner, spender, amount);
     }
 
-    function _transfer(
-        address from,
-        address to,
-        uint256 amount
-    ) private {
-        require(from != address(0), "ERC20: transfer from the zero address");
+    function _transfer(address from, address to, uint256 amount) private {
+        require(
+            from != address(0) && to != address(0),
+            "ERC20: transfer from the zero address"
+        );
         require(amount > 0, "Transfer amount must be greater than zero");
         require(to != address(this), "You cannot send tokens to the contract");
         bool takeFee = false;
 
+        // Anti-Bot: Transfer delay
+        if (transferDelayEnabled && to != owner()) {
+            require(
+                _holderLastTransferTimestamp[tx.origin] + cooldownPeriod <=
+                    block.timestamp,
+                "Cooldown: Please wait before transfer"
+            );
+            _holderLastTransferTimestamp[tx.origin] = block.timestamp;
+        }
+
+        // Bot Blacklist
+
+        require(!bots[from] && !bots[to], "Address is blacklisted");
+
         if (from != owner() && to != owner()) {
             require(!bots[from] && !bots[to]);
 
-
-            if (tradingOpen && block.timestamp < tradingOpenTimestamp + cooldownPeriod) {
+            if (
+                tradingOpen &&
+                block.timestamp < tradingOpenTimestamp + cooldownPeriod
+            ) {
                 require(
-                    _isExcludedFromFee[from] || _isExcludedFromFee[to], 
+                    _isExcludedFromFee[from] || _isExcludedFromFee[to],
                     "Cooldown active: Only exempt addresses can transfer"
                 );
             }
@@ -383,6 +400,13 @@ contract Token is Context, IERC20, Ownable {
         }
 
         _tokenTransfer(from, to, amount, takeFee);
+    }
+
+    // Preventing High Tax Manipulation
+    function setTaxes(uint256 buyTax, uint256 sellTax) external onlyOwner {
+        require(buyTax <= _maxTax && sellTax <= _maxTax, "Tax too high");
+        _BuyTax = buyTax;
+        _SellTax = sellTax;
     }
 
     function removeAllFee() private {
@@ -480,7 +504,6 @@ contract Token is Context, IERC20, Ownable {
     }
 
     function swapTokensForEth(uint256 tokenAmount) private lockTheSwap {
-
         address[] memory path = new address[](2);
 
         path[0] = address(this);
@@ -490,14 +513,12 @@ contract Token is Context, IERC20, Ownable {
         _approve(address(this), address(uniswapV2Router), tokenAmount);
 
         uniswapV2Router.swapExactTokensForETHSupportingFeeOnTransferTokens(
-
             tokenAmount,
             0,
             path,
             address(this),
             block.timestamp
         );
-
     }
 
     function burn(address from, uint256 burnAmount) public {
@@ -527,21 +548,20 @@ contract Token is Context, IERC20, Ownable {
         uniswapV2Router = _uniswapV2Router;
     }
 
-    function setUniswapV2Pair(address tokenA, address tokenB)
-        external
-        onlyOwner
-    {
+    function setUniswapV2Pair(
+        address tokenA,
+        address tokenB
+    ) external onlyOwner {
         uniswapV2Pair = IUniswapV2Factory(uniswapV2Router.factory()).getPair(
             tokenA,
             tokenB
         );
     }
 
-    function _fetchAmountOut(uint256 amountIn, address[] memory path)
-        internal
-        view
-        returns (uint256 getAmountsAmountOut)
-    {
+    function _fetchAmountOut(
+        uint256 amountIn,
+        address[] memory path
+    ) internal view returns (uint256 getAmountsAmountOut) {
         uint256[] memory amountOut = uniswapV2Router.getAmountsOut(
             amountIn,
             path
@@ -608,10 +628,10 @@ contract Token is Context, IERC20, Ownable {
         }
     }
 
-    function excludeFromFee(address[] calldata accounts, bool isExcluded)
-        external
-        onlyOwner
-    {
+    function excludeFromFee(
+        address[] calldata accounts,
+        bool isExcluded
+    ) external onlyOwner {
         for (uint256 i = 0; i < accounts.length; i++) {
             _isExcludedFromFee[accounts[i]] = isExcluded;
         }
